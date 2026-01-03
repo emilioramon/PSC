@@ -7,6 +7,10 @@ class WorkerSettings:
     kafka_topic_resultados = "encargos-resultados"
     kafka_group_id = "execution-workers"
     
+    # Redis
+    redis_host = os.getenv("REDIS_HOST", "redis")
+    redis_port = int(os.getenv("REDIS_PORT", "6379"))
+    
     # Storage Service
     storage_service_url = os.getenv("STORAGE_SERVICE_URL", "http://localhost:8000")
     

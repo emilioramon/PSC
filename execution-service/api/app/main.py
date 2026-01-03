@@ -5,12 +5,17 @@ import requests
 import uuid
 import json
 import io
+import logging
 from datetime import datetime
 from typing import Optional
 
 from config import settings
 from models import EncargoResponse, EncargoResult, WorkerStatus
 from kafka_producer import kafka_manager
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="FaaS Execution Service", version="1.0.0")
 
@@ -62,8 +67,10 @@ async def dejar_encargo(
     # Generar ID de encargo
     id_encargo = str(uuid.uuid4())
     
-    # Guardar en Storage Service (crear encargo con datos de entrada)
+    # IMPORTANTE: Guardar en Storage Service PRIMERO
     try:
+        logger.info(f"Creando encargo {id_encargo} en storage service...")
+        
         storage_response = requests.post(
             f"{settings.storage_service_url}/api/v1/crear_encargo",
             files={
@@ -71,36 +78,44 @@ async def dejar_encargo(
             },
             data={
                 "id_lambda": id_lambda,
-                "execution_id": id_encargo
+                "execution_id": id_encargo  # Usar el mismo ID
             },
             timeout=30
         )
         
         if storage_response.status_code != 200:
+            logger.error(f"Error en storage: {storage_response.status_code} - {storage_response.text}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error guardando en storage: {storage_response.text}"
             )
+        
+        logger.info(f"✓ Encargo creado en storage")
+        
     except requests.exceptions.RequestException as e:
+        logger.error(f"Error conectando a storage: {e}")
         raise HTTPException(status_code=500, detail=f"Error conectando a storage: {str(e)}")
     
     # Preparar mensaje para Kafka
     encargo_data = {
         "id_encargo": id_encargo,
         "id_lambda": id_lambda,
-        "codigo_content": codigo_content.hex(),  # Convertir a hex para serialización
+        "codigo_content": codigo_content.hex(),
         "datos_content": datos_content.hex(),
         "created_at": datetime.utcnow().isoformat()
     }
     
     # Enviar a Kafka
+    logger.info(f"Enviando encargo {id_encargo} a Kafka...")
     if not kafka_manager.send_encargo(encargo_data):
         raise HTTPException(status_code=500, detail="Error enviando a Kafka")
+    
+    logger.info(f"✓ Encargo enviado a Kafka")
     
     # Guardar estado inicial en Redis
     redis_client.setex(
         f"encargo:{id_encargo}",
-        3600 * 24,  # 24 horas TTL
+        3600 * 24,
         json.dumps({
             "id_encargo": id_encargo,
             "id_lambda": id_lambda,
@@ -114,7 +129,7 @@ async def dejar_encargo(
         status="pending",
         created_at=datetime.utcnow()
     )
-
+    
 # 2. Get_encargo
 @app.get("/api/v1/get_encargo/{id_encargo}")
 def get_encargo(id_encargo: str):
