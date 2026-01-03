@@ -5,6 +5,7 @@ import io
 import time
 import logging
 import shutil
+import tarfile
 from pathlib import Path
 
 logging.basicConfig(level=logging.INFO)
@@ -96,7 +97,6 @@ class CodeExecutor:
             for file in os.listdir(datos_dir):
                 src = os.path.join(datos_dir, file)
                 if os.path.isfile(src):
-                    # Copiar todos los archivos (incluyendo los generados)
                     dst = os.path.join(output_dir, file)
                     try:
                         shutil.copy2(src, dst)
@@ -131,132 +131,267 @@ class CodeExecutor:
                 logger.error(f"Error limpiando: {e}")
     
     def _compile_code(self, codigo_dir: str, output_dir: str) -> dict:
-        """Compilar el código C"""
+        """Compilar el código C copiando archivos al contenedor"""
         try:
             logger.info("=== INICIANDO COMPILACIÓN ===")
             
-            # Listar archivos .c
+            # Listar archivos .c en el HOST
             all_files = os.listdir(codigo_dir)
             c_files = [f for f in all_files if f.endswith('.c')]
             
             if not c_files:
                 return {"exit_code": 1, "output": f"No se encontraron archivos .c en: {all_files}"}
             
-            logger.info(f"Archivos C encontrados: {c_files}")
-            logger.info(f"Todos los archivos: {all_files}")
+            logger.info(f"Archivos C en el host: {c_files}")
+            
+            # Crear tar con todos los archivos
+            tar_buffer = io.BytesIO()
+            with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
+                for file in all_files:
+                    file_path = os.path.join(codigo_dir, file)
+                    if os.path.isfile(file_path):
+                        tar.add(file_path, arcname=file)
+                        logger.info(f"  Agregando a TAR: {file}")
+            
+            tar_buffer.seek(0)
+            logger.info("✓ Archivos empaquetados en TAR")
             
             # Crear comando de compilación
             c_files_str = ' '.join(c_files)
             
-            # Comando multi-línea para mejor debug
-            compile_cmd = f"""
+            compile_cmd = f"""#!/bin/bash
 set -e
 cd /codigo
-echo "Directorio actual: $(pwd)"
-echo "Archivos disponibles: $(ls -la)"
-echo "Compilando: {c_files_str}"
+echo "=== Archivos recibidos ==="
+ls -la
+echo ""
+echo "=== Compilando: {c_files_str} ==="
 gcc -o program {c_files_str} 2>&1
-echo "Compilación completada"
-ls -la program
+echo ""
+echo "=== Resultado ==="
+if [ -f program ]; then
+    echo "✓ Ejecutable creado"
+    ls -la program
+    chmod +x program
+else
+    echo "✗ Ejecutable NO creado"
+    exit 1
+fi
 """
             
-            logger.info(f"Ejecutando compilación...")
+            container = None
+            try:
+                # Crear contenedor SIN iniciarlo
+                container = self.docker_client.containers.create(
+                    "gcc:latest",
+                    command=["/bin/bash", "-c", compile_cmd],
+                    network_mode='none',
+                    user='root',
+                    working_dir='/codigo'
+                )
+                
+                logger.info(f"Contenedor creado: {container.id[:12]}")
+                
+                # Copiar archivos al contenedor
+                container.put_archive('/codigo', tar_buffer.getvalue())
+                logger.info("✓ Archivos copiados al contenedor")
+                
+                # Iniciar contenedor
+                container.start()
+                logger.info("Contenedor iniciado, esperando compilación...")
+                
+                # Esperar a que termine
+                result = container.wait(timeout=30)
+                exit_code = result['StatusCode']
+                
+                # Obtener logs
+                logs = container.logs(stdout=True, stderr=True).decode('utf-8', errors='ignore')
+                
+                logger.info(f"Compilación terminó con exit code: {exit_code}")
+                logger.info(f"Logs:\n{logs}")
+                
+                if exit_code == 0:
+                    # Copiar el ejecutable de vuelta al host
+                    try:
+                        logger.info("Copiando ejecutable del contenedor al host...")
+                        
+                        # Obtener el archivo program del contenedor
+                        bits, stat = container.get_archive('/codigo/program')
+                        
+                        # Extraer del tar
+                        tar_stream = io.BytesIO()
+                        for chunk in bits:
+                            tar_stream.write(chunk)
+                        tar_stream.seek(0)
+                        
+                        with tarfile.open(fileobj=tar_stream) as tar:
+                            member = tar.getmember('program')
+                            program_file = tar.extractfile(member)
+                            
+                            # Guardar en el host
+                            program_path = os.path.join(codigo_dir, 'program')
+                            with open(program_path, 'wb') as f:
+                                f.write(program_file.read())
+                            
+                            os.chmod(program_path, 0o755)
+                            logger.info("✓ Ejecutable copiado al host exitosamente")
+                    
+                    except Exception as e:
+                        logger.error(f"Error copiando ejecutable: {e}", exc_info=True)
+                        exit_code = 1
+                        logs += f"\n\nError copiando ejecutable: {str(e)}"
+                
+                # Limpiar contenedor
+                container.remove(force=True)
+                logger.info("Contenedor de compilación eliminado")
+                
+                return {"exit_code": exit_code, "output": logs}
             
-            container = self.docker_client.containers.run(
-                "gcc:latest",
-                command=["/bin/bash", "-c", compile_cmd],
-                volumes={
-                    codigo_dir: {'bind': '/codigo', 'mode': 'rw'}
-                },
-                remove=True,
-                detach=False,
-                network_mode='none'
-            )
-            
-            output = container.decode('utf-8', errors='ignore')
-            logger.info(f"Output de compilación:\n{output}")
-            
-            # Verificar ejecutable
-            program_path = os.path.join(codigo_dir, 'program')
-            if os.path.exists(program_path):
-                os.chmod(program_path, 0o755)
-                logger.info("✓ Ejecutable creado y con permisos")
-                return {"exit_code": 0, "output": output}
-            else:
-                files_after = os.listdir(codigo_dir)
-                logger.error(f"✗ Ejecutable NO creado. Archivos después: {files_after}")
-                return {"exit_code": 1, "output": f"Ejecutable no creado\nOutput: {output}\nArchivos: {files_after}"}
-        
-        except docker.errors.ContainerError as e:
-            error_msg = e.stderr.decode('utf-8', errors='ignore') if e.stderr else str(e)
-            logger.error(f"ContainerError en compilación: {error_msg}")
-            return {"exit_code": e.exit_status, "output": error_msg}
+            except Exception as e:
+                logger.error(f"Error durante compilación: {e}", exc_info=True)
+                if container:
+                    try:
+                        logs = container.logs(stdout=True, stderr=True).decode('utf-8', errors='ignore')
+                        container.remove(force=True)
+                        return {"exit_code": 1, "output": f"{logs}\n\nException: {str(e)}"}
+                    except:
+                        pass
+                return {"exit_code": 1, "output": str(e)}
         
         except Exception as e:
             logger.error(f"Exception en compilación: {e}", exc_info=True)
             return {"exit_code": 1, "output": str(e)}
     
     def _run_program(self, codigo_dir: str, datos_dir: str, output_dir: str) -> dict:
-        """Ejecutar el programa compilado"""
+        """Ejecutar el programa compilado copiando archivos al contenedor"""
         try:
             logger.info("=== INICIANDO EJECUCIÓN ===")
             
-            exec_cmd = f"""
-set -e
+            # Crear tar con el ejecutable
+            tar_codigo = io.BytesIO()
+            with tarfile.open(fileobj=tar_codigo, mode='w') as tar:
+                program_path = os.path.join(codigo_dir, 'program')
+                if not os.path.exists(program_path):
+                    return {
+                        "exit_code": -1,
+                        "stdout": "",
+                        "stderr": "Ejecutable 'program' no encontrado en el host"
+                    }
+                tar.add(program_path, arcname='program')
+                logger.info("Ejecutable agregado a TAR")
+            tar_codigo.seek(0)
+            
+            # Crear tar con los datos
+            tar_datos = io.BytesIO()
+            with tarfile.open(fileobj=tar_datos, mode='w') as tar:
+                for file in os.listdir(datos_dir):
+                    file_path = os.path.join(datos_dir, file)
+                    if os.path.isfile(file_path):
+                        tar.add(file_path, arcname=file)
+                        logger.info(f"Dato agregado a TAR: {file}")
+            tar_datos.seek(0)
+            
+            # Comando de ejecución
+            exec_cmd = f"""#!/bin/bash
 cd /datos
-echo "Directorio actual: $(pwd)"
-echo "Archivos disponibles: $(ls -la)"
-echo "Ejecutando programa..."
+echo "=== Archivos de datos ==="
+ls -la
+echo ""
+echo "=== Verificando programa ==="
+ls -la /codigo/program
+chmod +x /codigo/program
+echo ""
+echo "=== Ejecutando programa ==="
 timeout {self.timeout}s /codigo/program
-echo "Programa terminado"
+EXIT_CODE=$?
+echo ""
+echo "=== Resultado ==="
+echo "Exit code: $EXIT_CODE"
+echo "Archivos generados:"
+ls -la
+exit $EXIT_CODE
 """
             
-            container = self.docker_client.containers.run(
-                "gcc:latest",
-                command=["/bin/bash", "-c", exec_cmd],
-                volumes={
-                    codigo_dir: {'bind': '/codigo', 'mode': 'ro'},
-                    datos_dir: {'bind': '/datos', 'mode': 'rw'}
-                },
-                mem_limit=self.max_memory,
-                network_mode='none',
-                remove=True,
-                detach=False,
-                security_opt=['no-new-privileges'],
-                cap_drop=['ALL']
-            )
+            container = None
+            try:
+                # Crear contenedor
+                container = self.docker_client.containers.create(
+                    "gcc:latest",
+                    command=["/bin/bash", "-c", exec_cmd],
+                    network_mode='none',
+                    user='root',
+                    working_dir='/datos'
+                )
+                
+                logger.info(f"Contenedor de ejecución creado: {container.id[:12]}")
+                
+                # Copiar archivos
+                container.put_archive('/codigo', tar_codigo.getvalue())
+                container.put_archive('/datos', tar_datos.getvalue())
+                logger.info("✓ Archivos copiados al contenedor de ejecución")
+                
+                # Iniciar
+                container.start()
+                logger.info("Contenedor iniciado, esperando ejecución...")
+                
+                # Esperar
+                result = container.wait(timeout=self.timeout + 5)
+                exit_code = result['StatusCode']
+                
+                # Obtener logs
+                logs = container.logs(stdout=True, stderr=True).decode('utf-8', errors='ignore')
+                
+                logger.info(f"Ejecución terminó con exit code: {exit_code}")
+                logger.info(f"Output:\n{logs}")
+                
+                # Copiar archivos generados de vuelta
+                try:
+                    logger.info("Copiando archivos generados del contenedor...")
+                    
+                    bits, stat = container.get_archive('/datos')
+                    tar_stream = io.BytesIO()
+                    for chunk in bits:
+                        tar_stream.write(chunk)
+                    tar_stream.seek(0)
+                    
+                    # Extraer directamente al datos_dir, sobrescribiendo
+                    with tarfile.open(fileobj=tar_stream) as tar:
+                        # Extraer cada miembro individualmente
+                        for member in tar.getmembers():
+                            if member.isfile():
+                                # Extraer a datos_dir
+                                tar.extract(member, path=datos_dir)
+                                logger.info(f"  Archivo copiado: {member.name}")
+                    
+                    logger.info("✓ Archivos generados copiados al host")
+                
+                except Exception as e:
+                    logger.warning(f"No se pudieron copiar archivos generados: {e}")
+                
+                # Limpiar
+                container.remove(force=True)
+                logger.info("Contenedor de ejecución eliminado")
+                
+                return {
+                    "exit_code": exit_code,
+                    "stdout": logs,
+                    "stderr": "" if exit_code == 0 else f"Exit code: {exit_code}"
+                }
             
-            output = container.decode('utf-8', errors='ignore')
-            logger.info(f"✓ Programa ejecutado exitosamente")
-            logger.info(f"Output ({len(output)} chars):\n{output}")
-            
-            return {
-                "exit_code": 0,
-                "stdout": output,
-                "stderr": ""
-            }
-        
-        except docker.errors.ContainerError as e:
-            logger.warning(f"Programa terminó con exit code {e.exit_status}")
-            stdout = e.stdout.decode('utf-8', errors='ignore') if e.stdout else ""
-            stderr = e.stderr.decode('utf-8', errors='ignore') if e.stderr else ""
-            
-            logger.info(f"STDOUT: {stdout}")
-            logger.info(f"STDERR: {stderr}")
-            
-            return {
-                "exit_code": e.exit_status,
-                "stdout": stdout,
-                "stderr": stderr
-            }
+            except Exception as e:
+                logger.error(f"Error durante ejecución: {e}", exc_info=True)
+                if container:
+                    try:
+                        logs = container.logs(stdout=True, stderr=True).decode('utf-8', errors='ignore')
+                        container.remove(force=True)
+                        return {"exit_code": -1, "stdout": logs, "stderr": str(e)}
+                    except:
+                        pass
+                return {"exit_code": -1, "stdout": "", "stderr": str(e)}
         
         except Exception as e:
             logger.error(f"Exception en ejecución: {e}", exc_info=True)
-            return {
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": str(e)
-            }
+            return {"exit_code": -1, "stdout": "", "stderr": str(e)}
     
     def _create_error_result(self, error_msg: str) -> dict:
         """Crear resultado de error"""
@@ -306,4 +441,3 @@ echo "Programa terminado"
         except Exception as e:
             logger.error(f"Error creando ZIP: {e}", exc_info=True)
             return None
-        
