@@ -83,7 +83,7 @@ class CodeExecutor:
             
             logger.info(f"✓ Ejecución completada: exit_code={exec_result['exit_code']}")
             
-            # Guardar stdout y stderr
+            # Guardar stdout y stderr en output_dir
             with open(f"{output_dir}/stdout.txt", 'w') as f:
                 f.write(exec_result['stdout'])
             with open(f"{output_dir}/stderr.txt", 'w') as f:
@@ -93,19 +93,35 @@ class CodeExecutor:
             with open(f"{output_dir}/compile.log", 'w') as f:
                 f.write(compile_result['output'])
             
-            # Copiar archivos generados en datos_dir a output_dir
+            # CRÍTICO: Copiar TODOS los archivos de datos_dir a output_dir
+            # Estos archivos fueron actualizados por el programa durante la ejecución
+            logger.info(f"Copiando archivos generados de {datos_dir} a {output_dir}...")
+            files_copied = 0
             for file in os.listdir(datos_dir):
                 src = os.path.join(datos_dir, file)
                 if os.path.isfile(src):
                     dst = os.path.join(output_dir, file)
                     try:
                         shutil.copy2(src, dst)
-                        logger.info(f"Copiado: {file}")
+                        files_copied += 1
+                        file_size = os.path.getsize(src)
+                        logger.info(f"  ✓ Copiado: {file} ({file_size} bytes)")
                     except Exception as e:
-                        logger.warning(f"No se pudo copiar {file}: {e}")
+                        logger.warning(f"  ✗ No se pudo copiar {file}: {e}")
+            
+            logger.info(f"✓ {files_copied} archivos copiados a output_dir")
+            
+            # Verificar qué hay en output_dir antes de crear el ZIP
+            output_files = os.listdir(output_dir)
+            logger.info(f"Archivos en output_dir antes de crear ZIP: {output_files}")
             
             # Crear ZIP con resultados
             output_zip = self._create_output_zip(output_dir)
+            
+            if output_zip:
+                logger.info(f"✓ ZIP creado exitosamente: {len(output_zip)} bytes")
+            else:
+                logger.error("✗ ERROR: No se pudo crear el ZIP de salida")
             
             logger.info(f"✓ Ejecución completada: exit_code={exec_result['exit_code']}, time={execution_time}ms, zip_size={len(output_zip) if output_zip else 0}")
             
@@ -192,8 +208,6 @@ fi
                 logger.info(f"Contenedor creado: {container.id[:12]}")
                 
                 # Copiar archivos al contenedor
-                # put_archive extrae el TAR en el path especificado
-                # Como el TAR contiene codigo/file.c, al extraerlo en / crea /codigo/file.c
                 container.put_archive('/', tar_buffer.getvalue())
                 logger.info("✓ Archivos copiados al contenedor en /codigo")
                 
@@ -344,19 +358,18 @@ exit $EXIT_CODE
                 logs = container.logs(stdout=True, stderr=True).decode('utf-8', errors='ignore')
                 
                 logger.info(f"Ejecución terminó con exit code: {exit_code}")
-                logger.info(f"Output:\n{logs}")
                 
-                # Copiar archivos generados de vuelta
+                # CRÍTICO: Copiar archivos generados de vuelta al host
+                logger.info("Copiando archivos generados del contenedor al host...")
                 try:
-                    logger.info("Copiando archivos generados del contenedor...")
-                    
                     bits, stat = container.get_archive('/datos')
                     tar_stream = io.BytesIO()
                     for chunk in bits:
                         tar_stream.write(chunk)
                     tar_stream.seek(0)
                     
-                    # Extraer archivos del tar
+                    files_extracted = 0
+                    # Extraer archivos del tar directamente a datos_dir
                     with tarfile.open(fileobj=tar_stream) as tar:
                         for member in tar.getmembers():
                             if member.isfile():
@@ -366,17 +379,18 @@ exit $EXIT_CODE
                                 # Extraer el archivo
                                 file_content = tar.extractfile(member).read()
                                 
-                                # Guardar en datos_dir
+                                # Guardar en datos_dir (sobrescribe los originales)
                                 output_path = os.path.join(datos_dir, filename)
                                 with open(output_path, 'wb') as f:
                                     f.write(file_content)
                                 
-                                logger.info(f"  Archivo copiado: {filename}")
+                                files_extracted += 1
+                                logger.info(f"  ✓ Archivo extraído: {filename} ({len(file_content)} bytes)")
                     
-                    logger.info("✓ Archivos generados copiados al host")
+                    logger.info(f"✓ {files_extracted} archivos copiados del contenedor al host")
                 
                 except Exception as e:
-                    logger.warning(f"No se pudieron copiar archivos generados: {e}")
+                    logger.error(f"✗ Error copiando archivos generados: {e}", exc_info=True)
                 
                 # Limpiar
                 container.remove(force=True)
@@ -422,16 +436,19 @@ exit $EXIT_CODE
                 return None
             
             files_in_dir = os.listdir(output_dir)
-            logger.info(f"Creando ZIP con archivos: {files_in_dir}")
+            logger.info(f"Archivos disponibles para ZIP: {files_in_dir}")
             
             if not files_in_dir:
-                logger.warning("No hay archivos para el ZIP")
+                logger.warning("No hay archivos en output_dir, creando ZIP vacío")
                 zip_buffer = io.BytesIO()
                 with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
                     zf.writestr('empty.txt', 'No output files generated')
                 return zip_buffer.getvalue()
             
             zip_buffer = io.BytesIO()
+            total_size = 0
+            file_count = 0
+            
             with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
                 for root, dirs, files in os.walk(output_dir):
                     for file in files:
@@ -441,10 +458,12 @@ exit $EXIT_CODE
                         with open(file_path, 'rb') as f:
                             content = f.read()
                             zf.writestr(arc_name, content)
+                            total_size += len(content)
+                            file_count += 1
                             logger.info(f"  + {arc_name} ({len(content)} bytes)")
             
             zip_bytes = zip_buffer.getvalue()
-            logger.info(f"✓ ZIP creado: {len(zip_bytes)} bytes totales")
+            logger.info(f"✓ ZIP creado: {file_count} archivos, {total_size} bytes descomprimidos, {len(zip_bytes)} bytes comprimidos")
             
             return zip_bytes
         

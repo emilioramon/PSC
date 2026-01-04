@@ -284,11 +284,13 @@ async def guardar_resultado_encargo(
 @app.post("/api/v1/crear_encargo", response_model=EncargoResponse)
 async def crear_encargo(
     id_lambda: str = Form(..., description="ID de la lambda a ejecutar"),
+    execution_id: str = Form(..., description="ID del encargo (desde execution-service)"),
     datos_entrada: Optional[UploadFile] = File(None, description="Datos de entrada (.zip)"),
     db: Session = Depends(get_db)
 ):
     """
     Crear un nuevo encargo para ejecutar una lambda.
+    IMPORTANTE: Usa el execution_id que viene del execution-service.
     Opcionalmente puede recibir datos de entrada en .zip.
     """
     
@@ -297,8 +299,26 @@ async def crear_encargo(
     if not lambda_obj:
         raise HTTPException(status_code=404, detail="Lambda no encontrada")
     
-    # Generar ID de encargo
-    id_encargo = str(uuid.uuid4())
+    # CRÍTICO: Usar el execution_id que viene del execution-service
+    # NO generar uno nuevo aquí
+    id_encargo = execution_id
+    
+    # Verificar que no exista ya un encargo con ese ID
+    existing = db.query(Encargo).filter(Encargo.id_encargo == id_encargo).first()
+    if existing:
+        # Si ya existe, solo devolverlo (idempotencia)
+        return EncargoResponse(
+            id_encargo=str(existing.id_encargo),
+            id_lambda=str(existing.id_lambda),
+            status=existing.status,
+            created_at=existing.created_at,
+            completed_at=existing.completed_at,
+            exit_code=existing.exit_code,
+            stdout=existing.stdout,
+            stderr=existing.stderr,
+            execution_time_ms=existing.execution_time_ms,
+            tiene_resultado=existing.resultado_path is not None
+        )
     
     datos_entrada_path = None
     
@@ -321,9 +341,9 @@ async def crear_encargo(
         ):
             raise HTTPException(status_code=500, detail="Error al guardar datos de entrada")
     
-    # Crear encargo en BD
+    # Crear encargo en BD con el ID que vino del execution-service
     encargo = Encargo(
-        id_encargo=id_encargo,
+        id_encargo=id_encargo,  # ← Ahora usa el ID correcto
         id_lambda=id_lambda,
         datos_entrada_path=datos_entrada_path,
         status="pending"
