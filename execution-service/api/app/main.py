@@ -67,7 +67,9 @@ async def dejar_encargo(
     # Generar ID de encargo
     id_encargo = str(uuid.uuid4())
     
-    # IMPORTANTE: Guardar en Storage Service PRIMERO
+    # ====================================================================
+    # IMPORTANTE: Crear encargo en Storage Service PRIMERO
+    # ====================================================================
     try:
         logger.info(f"Creando encargo {id_encargo} en storage service...")
         
@@ -78,23 +80,25 @@ async def dejar_encargo(
             },
             data={
                 "id_lambda": id_lambda,
-                "execution_id": id_encargo  # Usar el mismo ID
+                "execution_id": id_encargo
             },
             timeout=30
         )
         
         if storage_response.status_code != 200:
-            logger.error(f"Error en storage: {storage_response.status_code} - {storage_response.text}")
+            logger.error(f"Error creando encargo en storage: {storage_response.status_code}")
+            logger.error(f"Response: {storage_response.text}")
             raise HTTPException(
                 status_code=500,
                 detail=f"Error guardando en storage: {storage_response.text}"
             )
         
-        logger.info(f"✓ Encargo creado en storage")
+        logger.info(f"✓ Encargo {id_encargo} creado en storage")
         
     except requests.exceptions.RequestException as e:
         logger.error(f"Error conectando a storage: {e}")
         raise HTTPException(status_code=500, detail=f"Error conectando a storage: {str(e)}")
+    # ====================================================================
     
     # Preparar mensaje para Kafka
     encargo_data = {
