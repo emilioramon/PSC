@@ -143,32 +143,32 @@ class CodeExecutor:
                 return {"exit_code": 1, "output": f"No se encontraron archivos .c en: {all_files}"}
             
             logger.info(f"Archivos C en el host: {c_files}")
+            c_files_str = ' '.join(c_files)
             
-            # Crear tar con todos los archivos
+            # Crear tar con todos los archivos CON EL PATH codigo/
             tar_buffer = io.BytesIO()
             with tarfile.open(fileobj=tar_buffer, mode='w') as tar:
                 for file in all_files:
                     file_path = os.path.join(codigo_dir, file)
                     if os.path.isfile(file_path):
-                        tar.add(file_path, arcname=file)
-                        logger.info(f"  Agregando a TAR: {file}")
+                        # IMPORTANTE: agregar con el prefijo codigo/
+                        tar.add(file_path, arcname=f'codigo/{file}')
+                        logger.info(f"  Agregando a TAR: codigo/{file}")
             
             tar_buffer.seek(0)
             logger.info("✓ Archivos empaquetados en TAR")
             
-            # Crear comando de compilación
-            c_files_str = ' '.join(c_files)
-            
+            # Comando de compilación
             compile_cmd = f"""#!/bin/bash
 set -e
 cd /codigo
-echo "=== Archivos recibidos ==="
+echo "=== Archivos en /codigo ==="
 ls -la
 echo ""
 echo "=== Compilando: {c_files_str} ==="
 gcc -o program {c_files_str} 2>&1
 echo ""
-echo "=== Resultado ==="
+echo "=== Verificando resultado ==="
 if [ -f program ]; then
     echo "✓ Ejecutable creado"
     ls -la program
@@ -181,20 +181,21 @@ fi
             
             container = None
             try:
-                # Crear contenedor SIN iniciarlo
+                # Crear contenedor
                 container = self.docker_client.containers.create(
                     "gcc:latest",
                     command=["/bin/bash", "-c", compile_cmd],
                     network_mode='none',
-                    user='root',
-                    working_dir='/codigo'
+                    user='root'
                 )
                 
                 logger.info(f"Contenedor creado: {container.id[:12]}")
                 
                 # Copiar archivos al contenedor
-                container.put_archive('/codigo', tar_buffer.getvalue())
-                logger.info("✓ Archivos copiados al contenedor")
+                # put_archive extrae el TAR en el path especificado
+                # Como el TAR contiene codigo/file.c, al extraerlo en / crea /codigo/file.c
+                container.put_archive('/', tar_buffer.getvalue())
+                logger.info("✓ Archivos copiados al contenedor en /codigo")
                 
                 # Iniciar contenedor
                 container.start()
@@ -267,28 +268,30 @@ fi
         try:
             logger.info("=== INICIANDO EJECUCIÓN ===")
             
-            # Crear tar con el ejecutable
+            # Verificar que existe el ejecutable
+            program_path = os.path.join(codigo_dir, 'program')
+            if not os.path.exists(program_path):
+                return {
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": "Ejecutable 'program' no encontrado en el host"
+                }
+            
+            # Crear tar con el ejecutable CON PATH codigo/
             tar_codigo = io.BytesIO()
             with tarfile.open(fileobj=tar_codigo, mode='w') as tar:
-                program_path = os.path.join(codigo_dir, 'program')
-                if not os.path.exists(program_path):
-                    return {
-                        "exit_code": -1,
-                        "stdout": "",
-                        "stderr": "Ejecutable 'program' no encontrado en el host"
-                    }
-                tar.add(program_path, arcname='program')
-                logger.info("Ejecutable agregado a TAR")
+                tar.add(program_path, arcname='codigo/program')
+                logger.info("Ejecutable agregado a TAR como codigo/program")
             tar_codigo.seek(0)
             
-            # Crear tar con los datos
+            # Crear tar con los datos CON PATH datos/
             tar_datos = io.BytesIO()
             with tarfile.open(fileobj=tar_datos, mode='w') as tar:
                 for file in os.listdir(datos_dir):
                     file_path = os.path.join(datos_dir, file)
                     if os.path.isfile(file_path):
-                        tar.add(file_path, arcname=file)
-                        logger.info(f"Dato agregado a TAR: {file}")
+                        tar.add(file_path, arcname=f'datos/{file}')
+                        logger.info(f"Dato agregado a TAR: datos/{file}")
             tar_datos.seek(0)
             
             # Comando de ejecución
@@ -319,15 +322,14 @@ exit $EXIT_CODE
                     "gcc:latest",
                     command=["/bin/bash", "-c", exec_cmd],
                     network_mode='none',
-                    user='root',
-                    working_dir='/datos'
+                    user='root'
                 )
                 
                 logger.info(f"Contenedor de ejecución creado: {container.id[:12]}")
                 
-                # Copiar archivos
-                container.put_archive('/codigo', tar_codigo.getvalue())
-                container.put_archive('/datos', tar_datos.getvalue())
+                # Copiar archivos (extraen automáticamente creando /codigo y /datos)
+                container.put_archive('/', tar_codigo.getvalue())
+                container.put_archive('/', tar_datos.getvalue())
                 logger.info("✓ Archivos copiados al contenedor de ejecución")
                 
                 # Iniciar
@@ -354,14 +356,22 @@ exit $EXIT_CODE
                         tar_stream.write(chunk)
                     tar_stream.seek(0)
                     
-                    # Extraer directamente al datos_dir, sobrescribiendo
+                    # Extraer archivos del tar
                     with tarfile.open(fileobj=tar_stream) as tar:
-                        # Extraer cada miembro individualmente
                         for member in tar.getmembers():
                             if member.isfile():
-                                # Extraer a datos_dir
-                                tar.extract(member, path=datos_dir)
-                                logger.info(f"  Archivo copiado: {member.name}")
+                                # El nombre puede venir como 'datos/file' o solo 'file'
+                                filename = os.path.basename(member.name)
+                                
+                                # Extraer el archivo
+                                file_content = tar.extractfile(member).read()
+                                
+                                # Guardar en datos_dir
+                                output_path = os.path.join(datos_dir, filename)
+                                with open(output_path, 'wb') as f:
+                                    f.write(file_content)
+                                
+                                logger.info(f"  Archivo copiado: {filename}")
                     
                     logger.info("✓ Archivos generados copiados al host")
                 
