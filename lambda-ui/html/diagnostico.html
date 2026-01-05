@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diagnóstico de Conexión</title>
+    <style>
+        body {
+            font-family: monospace;
+            padding: 20px;
+            background: #1e1e1e;
+            color: #d4d4d4;
+        }
+        .test {
+            margin: 20px 0;
+            padding: 15px;
+            border: 1px solid #333;
+            border-radius: 5px;
+            background: #252526;
+        }
+        .success { border-left: 4px solid #4caf50; }
+        .error { border-left: 4px solid #f44336; }
+        .info { border-left: 4px solid #2196f3; }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            cursor: pointer;
+            background: #0e639c;
+            color: white;
+            border: none;
+            border-radius: 3px;
+        }
+        button:hover { background: #1177bb; }
+        pre {
+            background: #1e1e1e;
+            padding: 10px;
+            overflow-x: auto;
+            border-radius: 3px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🔍 Diagnóstico de Conexión API Gateway</h1>
+    
+    <div>
+        <button onclick="testAll()">Ejecutar Todos los Tests</button>
+        <button onclick="clearResults()">Limpiar Resultados</button>
+    </div>
+
+    <div id="results"></div>
+
+    <script>
+        const results = document.getElementById('results');
+
+        function addResult(title, content, type = 'info') {
+            const div = document.createElement('div');
+            div.className = `test ${type}`;
+            div.innerHTML = `<h3>${title}</h3><pre>${content}</pre>`;
+            results.appendChild(div);
+        }
+
+        function clearResults() {
+            results.innerHTML = '';
+        }
+
+        async function testConnection(url, description) {
+            try {
+                addResult(`⏳ ${description}`, `Probando: ${url}`, 'info');
+                
+                const start = Date.now();
+                const response = await fetch(url);
+                const time = Date.now() - start;
+                
+                const contentType = response.headers.get('content-type');
+                let data;
+                
+                if (contentType && contentType.includes('application/json')) {
+                    data = await response.json();
+                } else {
+                    data = await response.text();
+                }
+                
+                const result = `
+✅ Estado: ${response.status} ${response.statusText}
+⏱️ Tiempo: ${time}ms
+📋 Content-Type: ${contentType}
+📦 Respuesta:
+${JSON.stringify(data, null, 2)}`;
+                
+                addResult(`✅ ${description}`, result, 'success');
+                return true;
+            } catch (error) {
+                const result = `
+❌ Error: ${error.message}
+🔗 URL: ${url}
+📝 Detalles: ${error.stack || 'No disponible'}`;
+                
+                addResult(`❌ ${description}`, result, 'error');
+                return false;
+            }
+        }
+
+        async function testFormData() {
+            try {
+                addResult('⏳ Test FormData a /api/v1/guardar_lambda', 'Enviando FormData...', 'info');
+                
+                const formData = new FormData();
+                formData.append('id_owner', 'test_user');
+                formData.append('descripcion', 'test_lambda');
+                
+                // Crear un archivo de prueba pequeño
+                const blob = new Blob(['print("hello")'], { type: 'text/plain' });
+                formData.append('archivo', blob, 'test.py');
+                
+                const start = Date.now();
+                const response = await fetch('/api/v1/guardar_lambda', {
+                    method: 'POST',
+                    body: formData
+                });
+                const time = Date.now() - start;
+                
+                const data = await response.json().catch(e => response.text());
+                
+                const result = `
+✅ Estado: ${response.status} ${response.statusText}
+⏱️ Tiempo: ${time}ms
+📦 Respuesta:
+${JSON.stringify(data, null, 2)}`;
+                
+                addResult('✅ Test FormData', result, response.ok ? 'success' : 'error');
+                return response.ok;
+            } catch (error) {
+                const result = `
+❌ Error: ${error.message}
+📝 Detalles: ${error.stack || 'No disponible'}`;
+                
+                addResult('❌ Test FormData', result, 'error');
+                return false;
+            }
+        }
+
+        async function testDirectAPI() {
+            try {
+                addResult('⏳ Test Directo a localhost:8080', 'Probando conexión directa...', 'info');
+                
+                const response = await fetch('http://localhost:8080/health');
+                const data = await response.json().catch(e => response.text());
+                
+                const result = `
+✅ Estado: ${response.status}
+📦 Respuesta: ${JSON.stringify(data, null, 2)}
+💡 El API está accesible directamente desde el navegador`;
+                
+                addResult('✅ Conexión Directa OK', result, 'success');
+                return true;
+            } catch (error) {
+                const result = `
+⚠️ No se puede conectar directamente
+Esto es normal si el API está detrás del proxy de Nginx
+Error: ${error.message}`;
+                
+                addResult('ℹ️ Conexión Directa', result, 'info');
+                return false;
+            }
+        }
+
+        async function testAll() {
+            clearResults();
+            
+            addResult('🚀 Iniciando Tests', 'Fecha: ' + new Date().toLocaleString(), 'info');
+            
+            // Test 1: Health check via proxy
+            await testConnection('/health', 'Health Check (vía Proxy)');
+            
+            // Test 2: API endpoint via proxy
+            await testConnection('/api/v1/get_list_lambdas_disponibles?id_owner=test', 
+                'Lista Lambdas (vía Proxy)');
+            
+            // Test 3: Conexión directa
+            await testDirectAPI();
+            
+            // Test 4: FormData
+            await testFormData();
+            
+            addResult('✔️ Tests Completados', 'Revise los resultados arriba', 'info');
+        }
+
+        // Información del entorno
+        addResult('ℹ️ Información del Navegador', `
+User Agent: ${navigator.userAgent}
+Plataforma: ${navigator.platform}
+Idioma: ${navigator.language}
+URL Actual: ${window.location.href}`, 'info');
+    </script>
+</body>
+</html>

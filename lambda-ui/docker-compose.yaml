@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  nginx-lambda-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: lambda-ui
+    ports:
+      - "80:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+    networks:
+      - lambda-network
+
+networks:
+  lambda-network:
+    driver: bridge

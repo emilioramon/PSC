@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestor de Funciones Lambda</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            font-size: 2.5em;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .nav-buttons {
+            display: flex;
+            gap: 15px;
+            margin-bottom: 30px;
+            justify-content: center;
+        }
+
+        .nav-btn {
+            padding: 12px 30px;
+            border: none;
+            border-radius: 25px;
+            font-size: 16px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+
+        .nav-btn.active {
+            background: white;
+            color: #667eea;
+        }
+
+        .nav-btn:not(.active) {
+            background: rgba(255,255,255,0.2);
+            color: white;
+        }
+
+        .nav-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(0,0,0,0.3);
+        }
+
+        .panel {
+            display: none;
+            background: white;
+            border-radius: 15px;
+            padding: 40px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+        }
+
+        .panel.active {
+            display: block;
+            animation: fadeIn 0.3s ease;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        input[type="text"],
+        select {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s ease;
+        }
+
+        input[type="text"]:focus,
+        select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        input[type="file"] {
+            width: 100%;
+            padding: 10px;
+            border: 2px dashed #e0e0e0;
+            border-radius: 8px;
+            cursor: pointer;
+        }
+
+        .btn {
+            padding: 14px 40px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            width: 100%;
+            margin-top: 10px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .status.show {
+            display: block;
+            animation: slideIn 0.3s ease;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(-20px); }
+            to { opacity: 1; transform: translateX(0); }
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(255,255,255,.3);
+            border-radius: 50%;
+            border-top-color: white;
+            animation: spin 1s ease-in-out infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .file-info {
+            font-size: 12px;
+            color: #666;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🚀 Gestor de Funciones Lambda</h1>
+        
+        <div class="nav-buttons">
+            <button class="nav-btn active" onclick="showPanel('alta')">Alta de Función</button>
+            <button class="nav-btn" onclick="showPanel('ejecucion')">Ejecutar Función</button>
+        </div>
+
+        <!-- Panel Alta de Función Lambda -->
+        <div id="panel-alta" class="panel active">
+            <h2 style="margin-bottom: 30px; color: #667eea;">📝 Alta de Función Lambda</h2>
+            
+            <form id="form-alta" onsubmit="return false;">
+                <div class="form-group">
+                    <label for="owner-alta">Identificador de Usuario (Owner)*</label>
+                    <input type="text" id="owner-alta" required placeholder="Ej: user123">
+                </div>
+
+                <div class="form-group">
+                    <label for="nombre-lambda">Nombre de la Función Lambda*</label>
+                    <input type="text" id="nombre-lambda" required placeholder="Ej: procesador_datos">
+                </div>
+
+                <div class="form-group">
+                    <label for="file-lambda">Archivo de la Función*</label>
+                    <input type="file" id="file-lambda" required accept=".zip,.py">
+                    <div class="file-info" id="file-info-alta"></div>
+                </div>
+
+                <button type="button" class="btn btn-primary" id="btn-alta" onclick="altaLambda()">
+                    Alta
+                </button>
+            </form>
+
+            <div id="status-alta" class="status"></div>
+        </div>
+
+        <!-- Panel Ejecución de Función Lambda -->
+        <div id="panel-ejecucion" class="panel">
+            <h2 style="margin-bottom: 30px; color: #667eea;">▶️ Ejecución de Función Lambda</h2>
+            
+            <form id="form-ejecucion" onsubmit="return false;">
+                <div class="form-group">
+                    <label for="owner-ejecucion">Identificador de Usuario*</label>
+                    <input type="text" id="owner-ejecucion" required placeholder="Ej: user123">
+                    <button type="button" class="btn btn-primary" onclick="cargarLambdas()" style="margin-top: 10px;">
+                        Cargar Funciones Disponibles
+                    </button>
+                </div>
+
+                <div class="form-group">
+                    <label for="select-lambda">Función Lambda*</label>
+                    <select id="select-lambda" required disabled>
+                        <option value="">Primero cargue las funciones disponibles</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="file-datos">Archivo de Datos*</label>
+                    <input type="file" id="file-datos" required>
+                    <div class="file-info" id="file-info-datos"></div>
+                </div>
+
+                <button type="button" class="btn btn-primary" id="btn-ejecutar" onclick="ejecutarLambda()">
+                    Ejecutar
+                </button>
+            </form>
+
+            <div id="status-ejecucion" class="status"></div>
+        </div>
+    </div>
+
+    <script src="api-client.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
