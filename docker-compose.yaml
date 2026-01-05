@@ -1,0 +1,202 @@
+version: '3.8'
+
+services:
+  # =========================
+  # API GATEWAY
+  # =========================
+  gateway:
+    build:
+      context: ./gateway-service
+      dockerfile: Dockerfile
+    container_name: faas-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      STORAGE_SERVICE_URL: http://storage-api:8000
+      EXECUTION_SERVICE_URL: http://execution-api:8001
+    depends_on:
+      - storage-api
+      - execution-api
+    networks:
+      - faas-network
+    restart: unless-stopped
+
+  # =========================
+  # STORAGE SERVICE
+  # =========================
+  storage-api:
+    build:
+      context: ./storage-service
+      dockerfile: Dockerfile
+    container_name: faas-storage-api
+    environment:
+      DATABASE_URL: postgresql://faas:faas123@postgres:5432/faas_storage
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_SECURE: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    networks:
+      - faas-network
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: faas-postgres
+    environment:
+      POSTGRES_USER: faas
+      POSTGRES_PASSWORD: faas123
+      POSTGRES_DB: faas_storage
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./storage-service/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U faas -d faas_storage"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - faas-network
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: faas-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9001:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - faas-network
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      sleep 5;
+      mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      mc mb myminio/lambdas --ignore-existing;
+      mc mb myminio/encargos-input --ignore-existing;
+      mc mb myminio/encargos-result --ignore-existing;
+      echo 'Buckets created';
+      "
+    networks:
+      - faas-network
+
+  # =========================
+  # EXECUTION SERVICE
+  # =========================
+  execution-api:
+    build:
+      context: ./execution-service/api
+      dockerfile: Dockerfile
+    container_name: faas-execution-api
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      STORAGE_SERVICE_URL: http://storage-api:8000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - faas-network
+    restart: unless-stopped
+
+  execution-worker:
+    build:
+      context: ./execution-service/worker
+      dockerfile: Dockerfile
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      STORAGE_SERVICE_URL: http://storage-api:8000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      EXECUTION_TIMEOUT: 30
+      MAX_MEMORY_MB: 512
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    privileged: true
+    networks:
+      - faas-network
+    restart: unless-stopped
+    deploy:
+      replicas: 2
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: faas-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - faas-network
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: faas-kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - faas-network
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: faas-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - faas-network
+    restart: unless-stopped
+
+networks:
+  faas-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
