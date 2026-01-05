@@ -1,2 +1,2 @@
-Asignatura: Programacion en Sistemas Cloud
-Alumno: Emilio Ramón
+#Asignatura: Programacion en Sistemas Cloud
+
