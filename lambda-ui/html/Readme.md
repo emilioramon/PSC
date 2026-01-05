@@ -5,7 +5,7 @@ Interface web con Nginx en Docker para gestionar y ejecutar funciones Lambda a t
 ## 📋 Estructura del Proyecto
 
 ```
-proyecto/
+lambda-ui/
 ├── Dockerfile
 ├── docker-compose.yml
 ├── nginx.conf
